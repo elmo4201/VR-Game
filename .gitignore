@@ -32,3 +32,489 @@ google-services.json
 
 # Android Profiling
 *.hprof
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public enum GameState { Menu, Playing, Paused, GameOver }
+
+public class GameManagerVR : MonoBehaviour
+{
+    public static GameManagerVR I { get; private set; }
+
+    [Header("Game Settings")]
+    public float roundDuration = 60f;
+    public int scorePerHit = 10;
+
+    [Header("Runtime")]
+    public GameState state = GameState.Playing;
+    public int score;
+    public float timeRemaining;
+
+    private void Awake()
+    {
+        if (I != null && I != this) { Destroy(gameObject); return; }
+        I = this;
+        DontDestroyOnLoad(gameObject);
+    }
+
+    private void OnEnable() { SceneManager.sceneLoaded += OnSceneLoaded; }
+    private void OnDisable() { SceneManager.sceneLoaded -= OnSceneLoaded; }
+
+    private void OnSceneLoaded(Scene s, LoadSceneMode m)
+    {
+        if (s.name == "Game") StartRound();
+    }
+
+    public void StartRound()
+    {
+        state = GameState.Playing;
+        score = 0;
+        timeRemaining = roundDuration;
+        UIManagerVR.I?.SetMessage("Hit targets to score!");
+        UIManagerVR.I?.SetScore(score);
+        UIManagerVR.I?.SetTimer(timeRemaining);
+        AudioManager.I?.PlayMusic(true);
+    }
+
+    private void Update()
+    {
+        if (state != GameState.Playing) return;
+        timeRemaining -= Time.deltaTime;
+        UIManagerVR.I?.SetTimer(timeRemaining);
+
+        if (timeRemaining <= 0f) EndRound();
+    }
+
+    public void AddScore(int amount)
+    {
+        score += amount;
+        UIManagerVR.I?.SetScore(score);
+    }
+
+    public void EndRound()
+    {
+        state = GameState.GameOver;
+        UIManagerVR.I?.SetMessage($"Time! Final Score: {score}\nPress Menu Button to restart.");
+        AudioManager.I?.FadeMusicOut(0.5f);
+    }
+
+    public void Restart() => SceneManager.LoadScene("Game");
+    public void GoToMenu() => SceneManager.LoadScene("MainMenu");
+}
+using UnityEngine;
+using TMPro;
+
+public class UIManagerVR : MonoBehaviour
+{
+    public static UIManagerVR I { get; private set; }
+
+    public TextMeshProUGUI scoreText;
+    public TextMeshProUGUI timerText;
+    public TextMeshProUGUI messageText;
+
+    private void Awake() => I = this;
+
+    public void SetScore(int s) { if (scoreText) scoreText.text = $"Score: {s}"; }
+    public void SetTimer(float t)
+    {
+        if (!timerText) return;
+        t = Mathf.Max(0f, t);
+        int mins = Mathf.FloorToInt(t / 60f);
+        int secs = Mathf.FloorToInt(t % 60f);
+        timerText.text = $"Time: {mins:00}:{secs:00}";
+    }
+    public void SetMessage(string msg) { if (messageText) messageText.text = msg; }
+}
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+
+[RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(XRGrabInteractable))]
+public class ThrowableVR : MonoBehaviour
+{
+    public int scoreOnHit = 10;
+    public AudioClip hitSfx;
+
+    private Rigidbody rb;
+    private XRGrabInteractable grab;
+
+    void Awake()
+    {
+        rb = GetComponent<Rigidbody>();
+        grab = GetComponent<XRGrabInteractable>();
+
+        grab.throwOnDetach = true;
+        grab.throwSmoothingDuration = 0.15f;
+        grab.throwVelocityScale = 1.2f;
+        grab.throwAngularVelocityScale = 1.0f;
+    }
+
+    void OnCollisionEnter(Collision c)
+    {
+        if (c.collider.CompareTag("Target"))
+        {
+            GameManagerVR.I?.AddScore(scoreOnHit);
+            AudioManager.I?.PlaySfx(hitSfx);
+        }
+    }
+}
+using UnityEngine;
+using UnityEngine.InputSystem; // New Input System
+
+public class VRInputManager : MonoBehaviour
+{
+    [Header("Input Actions")]
+    public InputActionProperty restartAction; // Bind to RightHand/A button
+    public InputActionProperty menuAction;    // Bind to LeftHand/X button
+
+    void OnEnable()
+    {
+        restartAction.action.performed += OnRestart;
+        menuAction.action.performed += OnMenu;
+        restartAction.action.Enable();
+        menuAction.action.Enable();
+    }
+
+    void OnDisable()
+    {
+        restartAction.action.performed -= OnRestart;
+        menuAction.action.performed -= OnMenu;
+        restartAction.action.Disable();
+        menuAction.action.Disable();
+    }
+
+    private void OnRestart(InputAction.CallbackContext ctx)
+    {
+        if (GameManagerVR.I != null && GameManagerVR.I.state == GameState.GameOver)
+        {
+            GameManagerVR.I.Restart();
+        }
+    }
+
+    private void OnMenu(InputAction.CallbackContext ctx)
+    {
+        if (GameManagerVR.I != null)
+        {
+            GameManagerVR.I.GoToMenu();
+        }
+    }
+}
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class PauseMenuVR : MonoBehaviour
+{
+    public GameObject panel; // Assign the Panel object
+
+    void Start()
+    {
+        if (panel) panel.SetActive(false);
+    }
+
+    public void TogglePause()
+    {
+        bool isActive = panel.activeSelf;
+        panel.SetActive(!isActive);
+
+        if (panel.activeSelf)
+        {
+            Time.timeScale = 0f;
+            GameManagerVR.I.state = GameState.Paused;
+        }
+        else
+        {
+            Time.timeScale = 1f;
+            GameManagerVR.I.state = GameState.Playing;
+        }
+    }
+
+    public void ResumeGame()
+    {
+        panel.SetActive(false);
+        Time.timeScale = 1f;
+        GameManagerVR.I.state = GameState.Playing;
+    }
+
+    public void RestartGame()
+    {
+        Time.timeScale = 1f;
+        GameManagerVR.I.Restart();
+    }
+
+    public void MainMenu()
+    {
+        Time.timeScale = 1f;
+        GameManagerVR.I.GoToMenu();
+    }
+
+    public void QuitGame()
+    {
+        Application.Quit();
+    }
+}
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class VRPauseMenuSpawner : MonoBehaviour
+{
+    [Header("References")]
+    public GameObject pauseMenuPrefab;   // Assign your PauseMenuVR prefab
+    public Transform xrCamera;           // Assign XR Origin’s Main Camera
+
+    [Header("Input")]
+    public InputActionProperty menuAction; // Bind to Menu button (Oculus left controller)
+
+    private GameObject currentMenu;
+
+    void OnEnable()
+    {
+        menuAction.action.performed += ToggleMenu;
+        menuAction.action.Enable();
+    }
+
+    void OnDisable()
+    {
+        menuAction.action.performed -= ToggleMenu;
+        menuAction.action.Disable();
+    }
+
+    private void ToggleMenu(InputAction.CallbackContext ctx)
+    {
+        if (currentMenu == null)
+        {
+            SpawnMenu();
+        }
+        else
+        {
+            Destroy(currentMenu);
+            Time.timeScale = 1f;
+            GameManagerVR.I.state = GameState.Playing;
+        }
+    }
+
+    private void SpawnMenu()
+    {
+        if (!pauseMenuPrefab || !xrCamera) return;
+
+        // Spawn 2m in front of the player’s gaze
+        Vector3 spawnPos = xrCamera.position + xrCamera.forward * 2f;
+        Quaternion spawnRot = Quaternion.LookRotation(xrCamera.forward, Vector3.up);
+
+        currentMenu = Instantiate(pauseMenuPrefab, spawnPos, spawnRot);
+        Time.timeScale = 0f;
+        GameManagerVR.I.state = GameState.Paused;
+    }
+}
+using UnityEngine;
+
+public class VRPauseMenuFollow : MonoBehaviour
+{
+    [Header("References")]
+    public Transform xrCamera; // Assign XR Origin’s Main Camera
+
+    [Header("Settings")]
+    public float followDistance = 2f;       // Distance in front of player
+    public float heightOffset = 0.0f;       // Adjust if you want it slightly above/below eye level
+    public float recenterDelay = 2f;        // Seconds before it recenters
+    public float smoothSpeed = 5f;          // How smoothly it moves/rotates
+
+    private float timer;
+    private Vector3 targetPos;
+    private Quaternion targetRot;
+
+    void OnEnable()
+    {
+        timer = 0f;
+        SnapToCamera();
+    }
+
+    void Update()
+    {
+        if (!xrCamera) return;
+
+        // Count time since last head movement
+        Vector3 forwardFlat = new Vector3(xrCamera.forward.x, 0, xrCamera.forward.z).normalized;
+        Vector3 menuDir = (transform.position - xrCamera.position).normalized;
+        float angle = Vector3.Angle(forwardFlat, menuDir);
+
+        if (angle > 30f) // If player looks away more than 30 degrees
+        {
+            timer += Time.unscaledDeltaTime;
+            if (timer >= recenterDelay)
+            {
+                SnapToCamera();
+                timer = 0f;
+            }
+        }
+        else
+        {
+            timer = 0f;
+        }
+
+        // Smoothly move/rotate toward target
+        transform.position = Vector3.Lerp(transform.position, targetPos, Time.unscaledDeltaTime * smoothSpeed);
+        transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.unscaledDeltaTime * smoothSpeed);
+    }
+
+    private void SnapToCamera()
+    {
+        if (!xrCamera) return;
+        Vector3 forwardFlat = new Vector3(xrCamera.forward.x, 0, xrCamera.forward.z).normalized;
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+
+public class VRPauseMenuHaptics : MonoBehaviour
+{
+    [Header("Haptics")]
+    public XRBaseController leftController;   // Assign LeftHand Controller
+    public XRBaseController rightController;  // Assign RightHand Controller
+    public float amplitude = 0.5f;            // Strength of vibration (0–1)
+    public float duration = 0.2f;             // Duration in seconds
+
+    public void PulseBoth()
+    {
+        if (leftController != null)
+            leftController.SendHapticImpulse(amplitude, duration);
+        if (rightController != null)
+            rightController.SendHapticImpulse(amplitude, duration);
+    }
+}
+GetComponent<VRPauseMenuHaptics>()?.PulseBoth();
+private void ToggleMenu(InputAction.CallbackContext ctx)
+{
+    if (currentMenu == null)
+    {
+        SpawnMenu();
+        GetComponent<VRPauseMenuHaptics>()?.PulseBoth(); // haptic on open
+    }
+    else
+    {
+        Destroy(currentMenu);
+        Time.timeScale = 1f;
+        GameManagerVR.I.state = GameState.Playing;
+        GetComponent<VRPauseMenuHaptics>()?.PulseBoth(); // haptic on close
+    }
+}
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+
+public class VRPauseMenuHapticsPatterns : MonoBehaviour
+{
+    [Header("Controllers")]
+    public XRBaseController leftController;
+    public XRBaseController rightController;
+
+    // General helper
+    private void Pulse(XRBaseController ctrl, float amp, float dur)
+    {
+        if (ctrl != null) ctrl.SendHapticImpulse(amp, dur);
+    }
+
+    private void PulseBoth(float amp, float dur)
+    {
+        Pulse(leftController, amp, dur);
+        Pulse(rightController, amp, dur);
+    }
+
+    // Distinct patterns
+    public void OnMenuOpen()
+    {
+        // Strong single pulse
+        PulseBoth(0.8f, 0.25f);
+    }
+
+    public void OnMenuClose()
+    {
+        // Softer single pulse
+        PulseBoth(0.4f, 0.15f);
+    }
+
+    public void OnResume()
+    {
+        // Quick double‑tap
+        PulseBoth(0.5f, 0.1f);
+        Invoke(nameof(ResumeSecondPulse), 0.15f);
+    }
+    private void ResumeSecondPulse() => PulseBoth(0.5f, 0.1f);
+
+    public void OnRestart()
+    {
+        // Stronger, longer pulse
+        PulseBoth(1.0f, 0.35f);
+    }
+
+    public void OnQuit()
+    {
+        // Fade‑out style: strong then soft
+        PulseBoth(0.8f, 0.2f);
+        Invoke(nameof(QuitSecondPulse), 0.2f);
+    }
+    private void QuitSecondPulse() => PulseBoth(0.3f, 0.15f);
+}
+public void ResumeGame()
+{
+    panel.SetActive(false);
+    Time.timeScale = 1f;
+    GameManagerVR.I.state = GameState.Playing;
+    FindObjectOfType<VRPauseMenuHapticsPatterns>()?.OnResume();
+}
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+
+public class TargetHitHaptics : MonoBehaviour
+{
+    [Header("Haptics")]
+    public float hitAmplitude = 0.7f;   // Strength of vibration
+    public float hitDuration = 0.15f;   // Duration in seconds
+
+    public void TriggerHaptics(XRBaseController controller)
+    {
+        if (controller != null)
+            controller.SendHapticImpulse(hitAmplitude, hitDuration);
+    }
+}
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+
+[RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(XRGrabInteractable))]
+public class ThrowableVR : MonoBehaviour
+{
+    public int scoreOnHit = 10;
+    public AudioClip hitSfx;
+
+    private XRGrabInteractable grab;
+
+    void Awake()
+    {
+        grab = GetComponent<XRGrabInteractable>();
+
+        grab.throwOnDetach = true;
+        grab.throwSmoothingDuration = 0.15f;
+        grab.throwVelocityScale = 1.2f;
+        grab.throwAngularVelocityScale = 1.0f;
+    }
+
+    void OnCollisionEnter(Collision c)
+    {
+        if (c.collider.CompareTag("Target"))
+        {
+            GameManagerVR.I?.AddScore(scoreOnHit);
+            AudioManager.I?.PlaySfx(hitSfx);
+
+            // Haptics: find which controller last held this object
+            var interactor = grab.firstInteractorSelecting as XRBaseControllerInteractor;
+            if (interactor != null)
+            {
+                var controller = interactor.xrController;
+                var haptics = c.collider.GetComponent<TargetHitHaptics>();
+                if (haptics != null)
+                {
+                    haptics.TriggerHaptics(controller);
+                }
+            }
+        }
+    }
+}
+float strength = Mathf.Clamp(rb.velocity.magnitude / 10f, 0.2f, 1f);
+controller.SendHapticImpulse(strength, 0.1f);
